@@ -1,0 +1,11 @@
+/dist/
+/tailbridge
+/config.yaml
+/config.local.yaml
+/coverage.out
+/.env
+/.env.*
+/state/
+/run/
+*.log
+.DS_Store

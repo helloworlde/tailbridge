@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>TailBridge</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark" aria-hidden="true"></span><strong>TailBridge</strong><span class="tagline">Tailnet 本地访问</span></div>
+    <div class="runtime"><span id="runtime-dot" class="status-dot neutral"></span><span id="runtime-state">正在连接</span></div>
+  </header>
+
+  <div class="shell">
+    <aside class="sidebar" aria-label="页面导航">
+      <nav>
+        <a class="nav-link active" href="#overview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/></svg>概览</a>
+        <a class="nav-link" href="#routes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M6 8h7a4 4 0 0 1 4 4v7M3 5h6M14 19h6"/></svg>路由</a>
+        <a class="nav-link" href="#configuration"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>配置</a>
+      </nav>
+      <p class="privacy">仅显示匿名状态，不展示 Peer 名称、IP、上游地址或 DERP 区域。</p>
+    </aside>
+
+    <main id="overview" class="content">
+      <div class="page-title"><div><h1>概览</h1><p>当前运行状态和已配置的本地路由。</p></div><button id="refresh" class="button secondary" type="button">刷新</button></div>
+
+      <section class="summary" aria-label="运行摘要">
+        <div><span>状态</span><strong id="summary-state">—</strong></div>
+        <div><span>Profiles</span><strong id="summary-profiles">0</strong></div>
+        <div><span>活跃路径</span><strong id="summary-path">—</strong></div>
+        <div><span>路由</span><strong id="summary-routes">0</strong></div>
+      </section>
+
+      <section class="section" aria-labelledby="profiles-title">
+        <div class="section-heading"><div><h2 id="profiles-title">Profiles</h2><p>Tailnet 节点与匿名网络状态。</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Profile</th><th>状态</th><th>Peers</th><th>活跃路径</th><th>子网路由</th><th>健康</th></tr></thead><tbody id="profiles-body"><tr><td colspan="6" class="empty">正在加载…</td></tr></tbody></table></div>
+      </section>
+
+      <section id="routes" class="section" aria-labelledby="routes-title">
+        <div class="section-heading"><div><h2 id="routes-title">路由</h2><p>只显示本地监听和运行计数，不显示上游目标。</p></div><button id="new-route" class="button primary" type="button">新建路由</button></div>
+        <div class="table-wrap"><table><thead><tr><th>路由</th><th>类型</th><th>本地监听</th><th>状态</th><th>当前连接</th><th>累计连接</th></tr></thead><tbody id="routes-body"><tr><td colspan="6" class="empty">正在加载…</td></tr></tbody></table></div>
+      </section>
+    </main>
+
+    <aside id="configuration" class="editor" aria-labelledby="editor-title">
+      <div class="editor-heading"><div><h2 id="editor-title">生成路由</h2><p>校验后复制到 <code>routes:</code>。</p></div></div>
+      <form id="route-form" novalidate>
+        <label>名称<input id="route-id" name="id" autocomplete="off" placeholder="home-web" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"></label>
+        <label>Profile<select id="route-profile" name="profile"></select></label>
+        <label>类型<select id="route-kind" name="kind"><option value="http">HTTP</option><option value="tcp">TCP</option></select></label>
+        <label>本地端口<input id="route-port" name="local_port" type="number" min="1" max="65535" inputmode="numeric" placeholder="18080" required></label>
+        <label>目标<input id="route-upstream" name="upstream" autocomplete="off" placeholder="http://service:3000" required><small id="upstream-help">HTTP(S) URL，例如 http://service:3000</small></label>
+        <div class="yaml-heading"><strong>生成的 YAML</strong><span id="validation-state">尚未校验</span></div>
+        <pre id="yaml-preview" aria-live="polite">填写路由字段后生成。</pre>
+        <div class="actions"><button class="button secondary" type="submit">校验</button><button id="copy-yaml" class="button primary" type="button" disabled>复制 YAML</button></div>
+      </form>
+      <p class="editor-note">Web UI 不会写配置或触发 reload。修改后运行 <code>tailbridge check</code> 并重启。</p>
+    </aside>
+  </div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
