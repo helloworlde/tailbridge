@@ -5,6 +5,7 @@
 package webui
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/helloworlde/tailbridge/internal/config"
+	"github.com/helloworlde/tailbridge/internal/forward"
 )
 
 //go:embed assets/*
@@ -25,12 +27,15 @@ var assets embed.FS
 type Options struct {
 	Config *config.Config
 	Status func() any
+	Probe  func(context.Context, config.Route) forward.ProbeResult
 }
 
 type handler struct {
-	config *config.Config
-	status func() any
-	static http.Handler
+	config     *config.Config
+	status     func() any
+	static     http.Handler
+	probe      func(context.Context, config.Route) forward.ProbeResult
+	probeSlots chan struct{}
 }
 
 func New(options Options) (http.Handler, error) {
@@ -41,7 +46,7 @@ func New(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &handler{config: options.Config, status: options.Status, static: http.FileServer(http.FS(staticFS))}
+	h := &handler{config: options.Config, status: options.Status, static: http.FileServer(http.FS(staticFS)), probe: options.Probe, probeSlots: make(chan struct{}, 4)}
 	return h.security(http.HandlerFunc(h.serveHTTP)), nil
 }
 
@@ -53,6 +58,8 @@ func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveMeta(w, r)
 	case r.URL.Path == "/api/v1/routes/validate":
 		h.validateRoute(w, r)
+	case r.URL.Path == "/api/v1/routes/probe":
+		h.probeRoute(w, r)
 	case r.URL.Path == "/favicon.ico":
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -71,6 +78,56 @@ func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
+}
+
+func (h *handler) probeRoute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "origin not allowed")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var input struct {
+		ID string `json:"id"`
+	}
+	if err := dec.Decode(&input); err != nil || input.ID == "" {
+		writeError(w, http.StatusBadRequest, "invalid probe input")
+		return
+	}
+	if err := ensureJSONEOF(dec); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid probe input")
+		return
+	}
+	var route *config.Route
+	for i := range h.config.Routes {
+		if h.config.Routes[i].ID == input.ID {
+			route = &h.config.Routes[i]
+			break
+		}
+	}
+	if route == nil {
+		writeError(w, http.StatusNotFound, "route is not configured in the running process")
+		return
+	}
+	if h.probe == nil {
+		writeError(w, http.StatusServiceUnavailable, "route diagnostics unavailable")
+		return
+	}
+	select {
+	case h.probeSlots <- struct{}{}:
+		defer func() { <-h.probeSlots }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "too many active probes")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), forward.ProbeTimeout)
+	defer cancel()
+	writeJSON(w, http.StatusOK, h.probe(ctx, *route))
 }
 
 func (h *handler) serveStatus(w http.ResponseWriter, r *http.Request) {

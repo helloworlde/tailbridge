@@ -4,6 +4,7 @@
 package webui
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/helloworlde/tailbridge/internal/config"
+	"github.com/helloworlde/tailbridge/internal/forward"
 )
 
 func testHandler(t *testing.T) http.Handler {
@@ -33,6 +35,46 @@ func testHandler(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	return h
+}
+
+func TestProbeAcceptsOnlyConfiguredRouteIDs(t *testing.T) {
+	h, err := New(Options{
+		Config: &config.Config{Routes: []config.Route{{ID: "web", Kind: "http", Upstream: "http://private-target"}}},
+		Status: func() any { return nil },
+		Probe: func(ctx context.Context, route config.Route) forward.ProbeResult {
+			return forward.ProbeResult{ID: route.ID, Kind: route.Kind, Reachable: true, HTTPStatus: 204}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := request(t, h, http.MethodPost, "/api/v1/routes/probe", `{"id":"web"}`)
+	if good.Code != http.StatusOK || !strings.Contains(good.Body.String(), `"reachable":true`) {
+		t.Fatalf("probe=%d %s", good.Code, good.Body.String())
+	}
+	if strings.Contains(good.Body.String(), "private-target") {
+		t.Fatal("probe exposed target")
+	}
+	for _, test := range []struct {
+		body   string
+		status int
+	}{
+		{`{"id":"missing"}`, http.StatusNotFound},
+		{`{"id":"web","upstream":"http://attacker"}`, http.StatusBadRequest},
+		{`{"id":"web"} {}`, http.StatusBadRequest},
+	} {
+		response := request(t, h, http.MethodPost, "/api/v1/routes/probe", test.body)
+		if response.Code != test.status {
+			t.Errorf("status=%d want=%d", response.Code, test.status)
+		}
+	}
+	badOrigin := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:18180/api/v1/routes/probe", strings.NewReader(`{"id":"web"}`))
+	badOrigin.Header.Set("Origin", "http://attacker.test")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, badOrigin)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin probe status=%d", response.Code)
+	}
 }
 
 func request(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

@@ -39,8 +39,9 @@
       </section>
 
       <section id="routes" class="section" aria-labelledby="routes-title">
-        <div class="section-heading"><div><h2 id="routes-title">路由</h2><p>只显示本地监听和运行计数，不显示上游目标。</p></div><button id="new-route" class="button primary" type="button">新建路由</button></div>
-        <div class="table-wrap"><table><thead><tr><th>路由</th><th>类型</th><th>本地监听</th><th>状态</th><th>当前连接</th><th>累计连接</th></tr></thead><tbody id="routes-body"><tr><td colspan="6" class="empty">正在加载…</td></tr></tbody></table></div>
+        <div class="section-heading"><div><h2 id="routes-title">路由</h2><p>手动检查上游连接，查看响应与耗时。上游地址始终隐藏。</p></div><button id="new-route" class="button primary" type="button">新建路由</button></div>
+        <div class="table-wrap"><table><thead><tr><th>路由</th><th>类型</th><th>本地监听</th><th>状态</th><th>当前连接</th><th>累计连接</th><th>上游诊断</th></tr></thead><tbody id="routes-body"><tr><td colspan="7" class="empty">正在加载…</td></tr></tbody></table></div>
+        <p class="probe-note">HTTP 检查使用 HEAD，不跟随重定向；TCP 可达表示连接成功，不代表业务认证通过。结果不会自动刷新。</p>
       </section>
     </main>
 

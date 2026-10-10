@@ -5,6 +5,7 @@ package forward
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -18,6 +19,69 @@ type directDialer struct{ d net.Dialer }
 
 func (d *directDialer) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	return d.d.DialContext(ctx, network, address)
+}
+
+type dialFunc func(context.Context, string, string) (net.Conn, error)
+
+func (f dialFunc) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+	return f(ctx, network, address)
+}
+
+func TestTCPShutdownCancelsPendingDial(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	entered, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer close(release)
+	dialer := dialFunc(func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+			return nil, ctx.Err()
+		case <-release:
+			return nil, errors.New("test cleanup")
+		}
+	})
+	route := NewTCP(config.Route{ID: "pending", Upstream: "unused:22", ConnectTimeout: config.Duration{Duration: 5 * time.Second}}, dialer, listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- route.Serve() }()
+	client, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("dial did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- route.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown error=%v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("shutdown exceeded drain deadline")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("pending dial was not cancelled")
+	}
+	client.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("local connection remained open")
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestTCPForwardsAndPreservesHalfClose(t *testing.T) {

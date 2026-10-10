@@ -5,6 +5,7 @@
 package config
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -351,8 +352,15 @@ func (c *Config) Validate() error {
 		}
 		switch r.Kind {
 		case "tcp":
-			if _, _, err := net.SplitHostPort(r.Upstream); err != nil {
+			host, port, err := net.SplitHostPort(r.Upstream)
+			if err != nil {
 				return fmt.Errorf("route %q: upstream must be host:port: %w", r.ID, err)
+			}
+			if err := validateHost(host); err != nil {
+				return fmt.Errorf("route %q: upstream %w", r.ID, err)
+			}
+			if err := validatePort(port, false); err != nil {
+				return fmt.Errorf("route %q: upstream %w", r.ID, err)
 			}
 			if r.CAFile != "" || r.TLSServerName != "" || r.RequestTimeout.Duration != 0 {
 				return fmt.Errorf("route %q: HTTP/TLS fields are not valid for a TCP route", r.ID)
@@ -365,11 +373,28 @@ func (c *Config) Validate() error {
 			if u.User != nil || u.Fragment != "" {
 				return fmt.Errorf("route %q: upstream must not contain credentials or a fragment", r.ID)
 			}
+			if err := validateHost(u.Hostname()); err != nil {
+				return fmt.Errorf("route %q: upstream %w", r.ID, err)
+			}
+			if u.Port() != "" || strings.HasSuffix(u.Host, ":") {
+				if err := validatePort(u.Port(), false); err != nil {
+					return fmt.Errorf("route %q: upstream %w", r.ID, err)
+				}
+			}
 			if r.HostHeader != "upstream" && r.HostHeader != "preserve" {
 				return fmt.Errorf("route %q: host_header must be upstream or preserve", r.ID)
 			}
 			if u.Scheme != "https" && (r.CAFile != "" || r.TLSServerName != "") {
 				return fmt.Errorf("route %q: tls_server_name and ca_file require an HTTPS upstream", r.ID)
+			}
+			if r.CAFile != "" {
+				pem, err := os.ReadFile(r.CAFile)
+				if err != nil {
+					return fmt.Errorf("route %q: read ca_file: %w", r.ID, err)
+				}
+				if !x509.NewCertPool().AppendCertsFromPEM(pem) {
+					return fmt.Errorf("route %q: ca_file contains no valid PEM certificates", r.ID)
+				}
 			}
 		}
 	}
@@ -377,9 +402,12 @@ func (c *Config) Validate() error {
 }
 
 func validateListen(value string, allowNonLoopback bool) error {
-	host, _, err := net.SplitHostPort(value)
+	host, port, err := net.SplitHostPort(value)
 	if err != nil {
 		return fmt.Errorf("listen must be IP:port: %w", err)
+	}
+	if err := validatePort(port, true); err != nil {
+		return fmt.Errorf("listen %w", err)
 	}
 	if host == "" {
 		if allowNonLoopback {
@@ -393,6 +421,34 @@ func validateListen(value string, allowNonLoopback bool) error {
 	}
 	if !ip.IsLoopback() && !allowNonLoopback {
 		return fmt.Errorf("listen address %s is not loopback; set allow_non_loopback explicitly", ip)
+	}
+	return nil
+}
+
+func validatePort(port string, allowZero bool) error {
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return errors.New("port must be numeric")
+		}
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || (!allowZero && n == 0) {
+		if allowZero {
+			return errors.New("port must be between 0 and 65535")
+		}
+		return errors.New("port must be between 1 and 65535")
+	}
+	return nil
+}
+
+func validateHost(host string) error {
+	if host == "" || strings.ContainsAny(host, " \t\r\n/\\?#@") {
+		return errors.New("host must be a non-empty hostname or IP address")
+	}
+	if strings.Contains(host, ":") {
+		if _, err := netip.ParseAddr(host); err != nil {
+			return errors.New("host is not a valid IPv6 address")
+		}
 	}
 	return nil
 }

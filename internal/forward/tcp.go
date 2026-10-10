@@ -24,7 +24,9 @@ type connPair struct {
 
 func (p *connPair) close() {
 	p.local.Close()
-	p.remote.Close()
+	if p.remote != nil {
+		p.remote.Close()
+	}
 }
 
 type TCP struct {
@@ -46,10 +48,13 @@ type TCP struct {
 	wg           sync.WaitGroup
 	mu           sync.Mutex
 	conns        map[*connPair]struct{}
+	dialCtx      context.Context
+	cancelDials  context.CancelFunc
 }
 
 func NewTCP(cfg config.Route, dialer Dialer, ln net.Listener, logger *slog.Logger) *TCP {
 	t := &TCP{cfg: cfg, dialer: dialer, ln: ln, log: logger, serveDone: make(chan struct{}), conns: make(map[*connPair]struct{})}
+	t.dialCtx, t.cancelDials = context.WithCancel(context.Background())
 	t.accepting.Store(true)
 	t.lastError.Store("")
 	return t
@@ -77,27 +82,43 @@ func (t *TCP) Serve() error {
 func (t *TCP) handle(local net.Conn) {
 	defer t.wg.Done()
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), t.cfg.ConnectTimeout.Duration)
-	remote, err := t.dialer.Dial(ctx, "tcp", t.cfg.Upstream)
-	cancel()
-	if err != nil {
-		t.setError(err)
-		t.log.Warn("TCP upstream dial failed", "route", t.cfg.ID, "profile", t.cfg.Profile, "error_class", diagnostics.Classify(err))
+	pair := &connPair{local: local}
+	t.mu.Lock()
+	if t.dialCtx.Err() != nil {
+		t.mu.Unlock()
 		local.Close()
 		return
 	}
-
-	pair := &connPair{local: local, remote: remote}
-	t.mu.Lock()
 	t.conns[pair] = struct{}{}
+	t.mu.Unlock()
+	defer func() {
+		t.mu.Lock()
+		pair.close()
+		delete(t.conns, pair)
+		t.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(t.dialCtx, t.cfg.ConnectTimeout.Duration)
+	remote, err := t.dialer.Dial(ctx, "tcp", t.cfg.Upstream)
+	cancel()
+	if err != nil {
+		if t.dialCtx.Err() == nil {
+			t.setError(err)
+			t.log.Warn("TCP upstream dial failed", "route", t.cfg.ID, "profile", t.cfg.Profile, "error_class", diagnostics.Classify(err))
+		}
+		return
+	}
+
+	t.mu.Lock()
+	if t.dialCtx.Err() != nil {
+		t.mu.Unlock()
+		remote.Close()
+		return
+	}
+	pair.remote = remote
 	t.mu.Unlock()
 	t.active.Add(1)
 	t.total.Add(1)
 	defer func() {
-		pair.close()
-		t.mu.Lock()
-		delete(t.conns, pair)
-		t.mu.Unlock()
 		t.active.Add(-1)
 		t.log.Info("TCP connection closed", "route", t.cfg.ID, "profile", t.cfg.Profile, "duration", time.Since(started).String())
 	}()
@@ -228,14 +249,15 @@ func (t *TCP) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		t.cancelDials()
 		return nil
 	case <-ctx.Done():
 		t.mu.Lock()
+		t.cancelDials()
 		for pair := range t.conns {
 			pair.close()
 		}
 		t.mu.Unlock()
-		<-done
 		return ctx.Err()
 	}
 }

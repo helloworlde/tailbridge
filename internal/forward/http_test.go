@@ -6,6 +6,7 @@ package forward
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -74,6 +75,106 @@ func TestHTTPForwardsHostAndPath(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHTTPShutdownReleasesPreparedListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	route, err := NewHTTP(config.Route{Upstream: "http://unused", ConnectTimeout: config.Duration{Duration: time.Second}}, &directDialer{}, listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := route.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := net.Listen("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("prepared listener leaked after shutdown: %v", err)
+	}
+	rebound.Close()
+}
+
+func TestHTTPShutdownCancelsRequestAfterDrainDeadline(t *testing.T) {
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+		close(finished)
+	}))
+	defer upstream.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := NewHTTP(config.Route{Upstream: upstream.URL, ConnectTimeout: config.Duration{Duration: time.Second}}, &directDialer{}, listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer route.server.Close()
+	go route.Serve()
+	client := &http.Client{Timeout: 2 * time.Second}
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		resp, _ := client.Get("http://" + listener.Addr().String())
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach upstream")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := route.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error=%v", err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("upstream request survived drain deadline")
+	}
+	select {
+	case <-requestDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("client connection survived drain deadline")
+	}
+}
+
+func TestHTTPStreamsSSEBeforeResponseEnds(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: ready\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := NewHTTP(config.Route{Upstream: upstream.URL, ConnectTimeout: config.Duration{Duration: time.Second}}, &directDialer{}, listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go route.Serve()
+	defer route.Shutdown(context.Background())
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Get("http://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil || line != "data: ready\n" {
+		t.Fatalf("SSE line=%q err=%v", line, err)
 	}
 }
 

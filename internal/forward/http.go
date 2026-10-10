@@ -42,28 +42,9 @@ func NewHTTP(cfg config.Route, dialer Dialer, ln net.Listener, logger *slog.Logg
 	if err != nil {
 		return nil, err
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		ctx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout.Duration)
-		defer cancel()
-		return dialer.Dial(ctx, network, address)
-	}
-	transport.ForceAttemptHTTP2 = true
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.TLSServerName}
-	if cfg.CAFile != "" {
-		pool, err := x509.SystemCertPool()
-		if err != nil {
-			return nil, err
-		}
-		pem, err := os.ReadFile(cfg.CAFile)
-		if err != nil {
-			return nil, err
-		}
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, errors.New("ca_file contains no valid PEM certificates")
-		}
-		transport.TLSClientConfig.RootCAs = pool
+	transport, err := newHTTPTransport(cfg, dialer)
+	if err != nil {
+		return nil, err
 	}
 
 	h := &HTTP{cfg: cfg, ln: ln, transport: transport, log: logger}
@@ -113,6 +94,34 @@ func NewHTTP(cfg config.Route, dialer Dialer, ln net.Listener, logger *slog.Logg
 		IdleTimeout:       cfg.IdleTimeout.Duration,
 	}
 	return h, nil
+}
+
+func newHTTPTransport(cfg config.Route, dialer Dialer) (*http.Transport, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout.Duration)
+		defer cancel()
+		return dialer.Dial(ctx, network, address)
+	}
+	transport.ForceAttemptHTTP2 = true
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.TLSServerName}
+	if cfg.CAFile != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, err
+		}
+		pem, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, err
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, errors.New("ca_file contains no valid PEM certificates")
+		}
+		transport.TLSClientConfig.RootCAs = pool
+	}
+
+	return transport, nil
 }
 
 func forwardedProto(req *http.Request) string {
@@ -173,7 +182,12 @@ func (h *HTTP) Serve() error {
 
 func (h *HTTP) Shutdown(ctx context.Context) error {
 	h.accepting.Store(false)
+	// A prepared listener is not registered with http.Server until Serve runs.
+	h.ln.Close()
 	err := h.server.Shutdown(ctx)
+	if err != nil {
+		h.server.Close()
+	}
 	h.transport.CloseIdleConnections()
 	return err
 }

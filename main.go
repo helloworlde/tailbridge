@@ -62,6 +62,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runCheck(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "tailbridge %s\ntailscale.com %s\n", tailbridgeVersion(), tailscaleDependencyVersion())
 		return nil
@@ -260,6 +262,7 @@ Commands:
   start    Connect profiles and serve configured loopback routes
   check    Strictly validate and normalize the YAML configuration
   status   Read the local runtime status file
+  doctor   Probe running routes through their Tailnet profiles
   version  Print TailBridge and official Tailscale library versions
 
 Run "tailbridge <command> -h" for command options.`)

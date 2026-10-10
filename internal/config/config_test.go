@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,48 @@ func writeConfig(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestLoadRejectsInvalidEndpoints(t *testing.T) {
+	for _, route := range []string{
+		`{id: bad, listen: "127.0.0.1:99999", upstream: "server:22"}`,
+		`{id: bad, listen: "127.0.0.1:", upstream: "server:22"}`,
+		`{id: bad, listen: "127.0.0.1:http", upstream: "server:22"}`,
+		`{id: bad, local_port: 18080, upstream: ":22"}`,
+		`{id: bad, local_port: 18080, upstream: "server:99999"}`,
+		`{id: bad, local_port: 18080, upstream: "server:0"}`,
+		`{id: bad, local_port: 18080, upstream: "server:"}`,
+		`{id: bad, local_port: 18080, upstream: "server name:22"}`,
+		`{id: bad, local_port: 18080, upstream: "https://:443"}`,
+		`{id: bad, local_port: 18080, upstream: "https://server:99999"}`,
+		`{id: bad, local_port: 18080, upstream: "https://server:"}`,
+	} {
+		t.Run(route, func(t *testing.T) {
+			body := "version: 1\nprofiles: [{id: home, hostname: test}]\nroutes: [" + route + "]\n"
+			if _, err := Load(writeConfig(t, body)); err == nil {
+				t.Fatal("invalid endpoint accepted")
+			}
+		})
+	}
+	for _, address := range []string{"127.0.0.1:65536", "[::1]:-1"} {
+		body := fmt.Sprintf("version: 1\nprofiles: [{id: home, hostname: test}]\nweb_ui: {listen: %q}\n", address)
+		if _, err := Load(writeConfig(t, body)); err == nil {
+			t.Errorf("invalid Web UI endpoint %q accepted", address)
+		}
+	}
+}
+
+func TestLoadRejectsMissingOrInvalidCA(t *testing.T) {
+	bad := filepath.Join(t.TempDir(), "invalid.pem")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(t.TempDir(), "missing.pem"), bad} {
+		body := fmt.Sprintf("version: 1\nprofiles: [{id: home, hostname: test}]\nroutes: [{id: web, local_port: 18080, upstream: \"https://service\", ca_file: %q}]\n", path)
+		if _, err := Load(writeConfig(t, body)); err == nil || !strings.Contains(err.Error(), "ca_file") {
+			t.Fatalf("invalid CA accepted: %v", err)
+		}
+	}
 }
 
 func TestDefaultPathForExecutable(t *testing.T) {

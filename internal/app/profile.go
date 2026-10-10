@@ -17,18 +17,29 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"github.com/helloworlde/tailbridge/internal/config"
 	"github.com/helloworlde/tailbridge/internal/diagnostics"
+	"golang.org/x/sys/unix"
+	"tailscale.com/client/local"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
+// tailnetServer is the boundary to the embedded Tailscale SDK.
+type tailnetServer interface {
+	Up(context.Context) (*ipnstate.Status, error)
+	Close() error
+	Dial(context.Context, string, string) (net.Conn, error)
+	LocalClient() (*local.Client, error)
+	Loopback() (string, string, string, error)
+}
+
 type profileRuntime struct {
-	cfg    config.Profile
-	server *tsnet.Server
-	lock   *os.File
-	log    *slog.Logger
+	cfg       config.Profile
+	server    tailnetServer
+	newServer func(*tsnet.Server) tailnetServer
+	lock      *os.File
+	log       *slog.Logger
 
 	mu        sync.RWMutex
 	state     string
@@ -117,12 +128,18 @@ func (p *profileRuntime) start(parent context.Context, timeout time.Duration, cr
 			p.log.Warn("Tailscale device approval is required", "profile", p.cfg.ID, "action", "approve this device in the Tailscale Machines admin page")
 		}
 	}
-	server := &tsnet.Server{
+	options := &tsnet.Server{
 		Dir: p.cfg.StateDir, Hostname: p.cfg.Hostname, Ephemeral: p.cfg.Ephemeral,
 		ControlURL: p.cfg.ControlURL, UserLogf: userLogf, Port: p.cfg.UDPPort,
 		AdvertiseTags: append([]string(nil), p.cfg.AdvertiseTags...),
 	}
+	var server tailnetServer = options
+	if p.newServer != nil {
+		server = p.newServer(options)
+	}
+	p.mu.Lock()
 	p.server = server
+	p.mu.Unlock()
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	status, err := server.Up(ctx)
 	cancel()
@@ -138,7 +155,9 @@ func (p *profileRuntime) start(parent context.Context, timeout time.Duration, cr
 		}
 		p.setState("failed", class)
 		server.Close()
+		p.mu.Lock()
 		p.server = nil
+		p.mu.Unlock()
 		p.unlock()
 		return fmt.Errorf("connect profile %q (%s): %w", p.cfg.ID, class, err)
 	}
@@ -281,7 +300,13 @@ func (p *profileRuntime) setNetworkUnavailable() {
 }
 
 func (p *profileRuntime) Dial(ctx context.Context, network, address string) (net.Conn, error) {
-	return p.server.Dial(ctx, network, address)
+	p.mu.RLock()
+	server := p.server
+	p.mu.RUnlock()
+	if server == nil {
+		return nil, errors.New("profile is not running")
+	}
+	return server.Dial(ctx, network, address)
 }
 
 func (p *profileRuntime) close() error {
@@ -299,10 +324,13 @@ func (p *profileRuntime) close() error {
 		cancelDiagnostics()
 		p.diagnosticsWG.Wait()
 	}
+	p.mu.Lock()
+	server := p.server
+	p.server = nil
+	p.mu.Unlock()
 	var err error
-	if p.server != nil {
-		err = p.server.Close()
-		p.server = nil
+	if server != nil {
+		err = server.Close()
 	}
 	p.unlock()
 	if !preserveFailure {

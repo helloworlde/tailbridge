@@ -2,7 +2,7 @@
 
 TailBridge 是一个独立的 Go 命令行工具：它通过官方 `tsnet` 在进程内加入 Tailnet，把明确配置的 HTTP/TCP 服务映射到 macOS loopback。它不启动系统 VPN，不修改系统路由、DNS 或代理。
 
-内置 Web UI 用于查看匿名运行状态，并生成、校验、复制简化路由 YAML。CLI 和 YAML 始终是唯一权威入口；Web UI 不写配置、不保存上游目标，也不触发 reload。
+内置 Web UI 用于查看匿名运行状态、手动诊断上游连接，并生成、校验、复制简化路由 YAML。CLI 和 YAML 始终是唯一权威入口；Web UI 不写配置、不保存上游目标，也不触发 reload。
 
 > TailBridge 不是 Tailscale 官方产品，也不绕过 Tailnet ACL、Grants、设备审批或密钥生命周期。
 
@@ -65,9 +65,12 @@ open http://127.0.0.1:18180/
 | `tailbridge check` | 严格解析、规范化并校验 YAML，不连接 Tailnet；已知校验边界见开发文档 |
 | `tailbridge start` | 启动 tsnet profiles、本地 routes 和可选 Web UI |
 | `tailbridge status [--json]` | 读取匿名运行状态 |
+| `tailbridge doctor [-route ID] [--json]` | 通过运行中的进程诊断已配置的上游连接，需要启用 Web UI |
 | `tailbridge version` | 显示 TailBridge 与官方 Tailscale 库版本 |
 
 不传 `-config` 时，配置固定为可执行文件同目录的 `config.yaml`，不受当前工作目录影响。节点身份和运行状态默认保存在 `~/Library/Application Support/TailBridge/`。
+
+在另一个终端运行 `./dist/tailbridge doctor`，或在页面路由行点击「检查」。HTTP 发送 HEAD、验证 TLS、不跟随重定向，显示响应码和耗时；TCP 只建立并关闭连接。每条检查最多 5 秒。HTTP 4xx 表示服务器可达，但不证明认证或业务可用；HTTP 5xx、连接失败和诊断接口错误会令 `doctor` 返回非零退出码。诊断不启动第二个 tsnet 节点，也不输出上游地址或响应正文。
 
 ## 能力与边界
 
@@ -75,7 +78,7 @@ open http://127.0.0.1:18180/
 - TCP：SSH、数据库、VNC 等任意 TCP 客户端。
 - SOCKS5：适合需要保留原始 Host、TLS SNI、Cookie Domain 或 WebAuthn origin 的应用。
 - Subnet routes、MagicDNS、Direct、Peer Relay、DERP：使用官方 tsnet 数据面和控制面策略。
-- Web UI：只读匿名状态和本地路由 YAML 助手，只允许 loopback。
+- Web UI：匿名状态、手动连接诊断和本地路由 YAML 助手，只允许 loopback。
 
 不支持系统全局 VPN、自动代理/DNS/路由修改、Funnel、公网入口、热重载、Web UI 写配置或强制固定某个 Peer Relay。官方客户端没有稳定的 per-client Peer Relay 固定 API；TailBridge 只报告实际使用路径。
 
